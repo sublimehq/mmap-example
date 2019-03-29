@@ -10,10 +10,19 @@
 
 #include <assert.h>
 #include <fcntl.h>
+#include <setjmp.h>
+#include <signal.h>
 #include <stdint.h>
-#include <sys/stat.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <unistd.h>
+
+sigjmp_buf sigbus_jmp_buf;
+
+static void handle_sigbus(int c) {
+    // longjmp out of the signal handler, returning the signal
+    longjmp(sigbus_jmp_buf, c);
+}
 
 struct file {
     const size_t size;
@@ -29,11 +38,19 @@ struct file {
     }
 
     // Get a 64 bit integer at the byte offset
-    int64_t read(size_t offset) {
+    bool read(size_t offset, int64_t * result) {
         // Out of bounds check
         assert(offset <= size - sizeof(int64_t));
 
-        return *(int64_t*)((int8_t*)data + offset);
+        // setjmp to handle SIGBUS
+        if (setjmp(sigbus_jmp_buf) == 0) {
+            // This path will be run while no SIGBUS is encountered
+            *result = *(int64_t*)((int8_t*)data + offset);
+            return true;
+        } else {
+            // This path will be run when a SIGBUS is encountered
+            return false;
+        }
     }
 };
 
@@ -66,6 +83,11 @@ int main(int argc, char const *argv[]) {
         return 1;
     }
 
+    // Install signal handler for SIGBUS
+    struct sigaction act;
+    act.sa_handler = &handle_sigbus;
+    sigaction(SIGBUS, &act, nullptr);
+
     // Open the requested file
     file* f = open_file(argv[1]);
 
@@ -78,8 +100,15 @@ int main(int argc, char const *argv[]) {
     // Continuously read from a random location
     while (true) {
         size_t offset = (size_t) random(rng);
-        // Print out the number
-        std::cout << f->read(offset) << std::endl;
+
+        // Get the number at the offset
+        int64_t value;
+        if (f->read(offset, &value)) {
+            // Print out the number
+            std::cout << value << std::endl;
+        } else {
+            std::cout << "Failed to read" << std::endl;
+        }
     }
 
     delete f;
