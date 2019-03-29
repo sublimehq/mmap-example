@@ -26,8 +26,8 @@ static void handle_sigbus(int c) {
     if (sigbus_jmp_set) {
         sigbus_jmp_set = false;
 
-        // longjmp out of the signal handler, returning the signal
-        longjmp(sigbus_jmp_buf, c);
+        // siglongjmp out of the signal handler, returning the signal
+        siglongjmp(sigbus_jmp_buf, c);
     }
 }
 
@@ -52,8 +52,8 @@ struct file {
         // Notify that a jmp point has been set.
         sigbus_jmp_set = true;
 
-        // setjmp to handle SIGBUS
-        if (setjmp(sigbus_jmp_buf) == 0) {
+        // sigsetjmp to handle SIGBUS. Do not save the signal mask
+        if (sigsetjmp(sigbus_jmp_buf, 0) == 0) {
             // This path will be run while no SIGBUS is encountered
             *result = *(int64_t*)((int8_t*)data + offset);
 
@@ -102,6 +102,12 @@ int main(int argc, char const *argv[]) {
     // Install signal handler for SIGBUS
     struct sigaction act;
     act.sa_handler = &handle_sigbus;
+
+    // SA_NODEFER is required due to siglongjmp
+    act.sa_flags = SA_NODEFER;
+    sigemptyset(&act.sa_mask); // Don't block any signals
+
+    // Connect the signal
     sigaction(SIGBUS, &act, nullptr);
 
     // Open the requested file
