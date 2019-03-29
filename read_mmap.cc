@@ -17,11 +17,18 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-sigjmp_buf sigbus_jmp_buf;
+// Keep track of this thread's jump point and whether its set
+thread_local volatile bool sigbus_jmp_set;
+thread_local sigjmp_buf sigbus_jmp_buf;
 
 static void handle_sigbus(int c) {
-    // longjmp out of the signal handler, returning the signal
-    longjmp(sigbus_jmp_buf, c);
+    // Onlt handle the signal if the jump point is set on this thread
+    if (sigbus_jmp_set) {
+        sigbus_jmp_set = false;
+
+        // longjmp out of the signal handler, returning the signal
+        longjmp(sigbus_jmp_buf, c);
+    }
 }
 
 struct file {
@@ -42,12 +49,21 @@ struct file {
         // Out of bounds check
         assert(offset <= size - sizeof(int64_t));
 
+        // Notify that a jmp point has been set.
+        sigbus_jmp_set = true;
+
         // setjmp to handle SIGBUS
         if (setjmp(sigbus_jmp_buf) == 0) {
             // This path will be run while no SIGBUS is encountered
             *result = *(int64_t*)((int8_t*)data + offset);
+
+            // The jump point is no longer valid
+            sigbus_jmp_set = false;
             return true;
         } else {
+            // The jump point is no longer valid
+            sigbus_jmp_set = false;
+
             // This path will be run when a SIGBUS is encountered
             return false;
         }
