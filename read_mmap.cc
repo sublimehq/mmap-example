@@ -12,6 +12,7 @@
 #include <fcntl.h>
 #include <stdint.h>
 #include <sys/stat.h>
+#include <sys/mman.h>
 #include <unistd.h>
 
 struct file {
@@ -24,7 +25,7 @@ struct file {
 
     // File destructor
     ~file() {
-        free((void*)data);
+        munmap((void*)data, size);
     }
 
     // Get a 64 bit integer at the byte offset
@@ -49,23 +50,11 @@ file* open_file(const char * path) {
         return nullptr;
 
     // Allocate a buffer for the file contents
-    void* data = malloc(st.st_size);
-    if (!data) {
-        // For when allocation fails
-        close(fd);
+    void* data = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+
+    // mmap returns MAP_FAILED on error, not NULL
+    if (data == MAP_FAILED)
         return nullptr;
-    }
-
-    // Read the full contents of the file
-    size_t bytes_read = read(fd, data, st.st_size);
-
-    close(fd);
-
-    // Check whether the full file has been read
-    if (bytes_read != (size_t) st.st_size) {
-        free(data);
-        return nullptr;
-    }
 
     // Construct a new file with the data
     return new file(st.st_size, data);
