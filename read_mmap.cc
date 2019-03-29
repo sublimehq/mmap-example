@@ -9,14 +9,22 @@
 #include <random>
 
 #include <assert.h>
+#include <stdint.h>
+
+#if defined(_WIN32)
+#include <windows.h>
+#else
 #include <fcntl.h>
 #include <setjmp.h>
 #include <signal.h>
-#include <stdint.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#endif
 
+#if defined(_WIN32)
+void install_signal_handlers() {}
+#else
 // Keep track of this thread's jump point and whether its set
 thread_local volatile bool sigbus_jmp_set;
 thread_local sigjmp_buf sigbus_jmp_buf;
@@ -43,9 +51,22 @@ void install_signal_handlers() {
     // Connect the signal
     sigaction(SIGBUS, &act, nullptr);
 }
+#endif
+
 
 template<typename F>
 bool safe_mmap_try(F fn) {
+#if defined(_WIN32)
+    __try {
+        fn();
+        return true;
+    } __except(
+        GetExceptionCode() == EXCEPTION_IN_PAGE_ERROR
+            ? EXCEPTION_EXECUTE_HANDLER
+            : EXCEPTION_CONTINUE_SEARCH) {
+        return false;
+    }
+#else
     // Make sure we don't call safe_mmap_try from fn
     assert(!sigbus_jmp_set);
 
@@ -63,6 +84,7 @@ bool safe_mmap_try(F fn) {
         sigbus_jmp_set = false;
         return false;
     }
+#endif
 }
 
 struct file {
@@ -73,10 +95,8 @@ struct file {
     file(size_t s, void* d) : size(s), data(d) {
     }
 
-    // File destructor
-    ~file() {
-        munmap((void*)data, size);
-    }
+    // Virtual file destructor so we can override per system
+    virtual ~file() {}
 
     // Get a 64 bit integer at the byte offset
     bool read(size_t offset, int64_t * result) {
@@ -86,6 +106,72 @@ struct file {
         return safe_mmap_try([&]() {
             *result = *(int64_t*)((int8_t*)data + offset);
         });
+    }
+};
+
+#if defined(_WIN32)
+struct windows_file : public file {
+    HANDLE win_handle;
+
+    windows_file(HANDLE h, size_t s, void* d) : file(s, d), win_handle(h) {
+    }
+
+    virtual ~windows_file() {
+        // Need to unmap, then close
+        UnmapViewOfFile(data);
+        CloseHandle(win_handle);
+    }
+};
+
+file* open_file(const char * path) {
+    // Create a normal file handle
+    HANDLE f = CreateFile(
+        path,
+        GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr,
+        OPEN_EXISTING,
+        0,
+        nullptr);
+    if (f == INVALID_HANDLE_VALUE)
+        return nullptr;
+
+    // Get the size of the file
+    size_t size = 0;
+
+    LARGE_INTEGER i;
+    if (GetFileSizeEx(f, &i)) {
+        size = (size_t)i.QuadPart;
+    } else {
+        CloseHandle(f);
+        return nullptr;
+    }
+
+    // Create a file mapping, needed for a map view
+    HANDLE hmap = CreateFileMapping(f, nullptr, PAGE_READONLY, 0, 0, nullptr);
+
+    if (!hmap)
+        return nullptr;
+
+    // Actually memory map the file
+    void* data = MapViewOfFile(hmap, FILE_MAP_READ, 0, 0, size);
+
+    // Close the regular file handle, keep hmap around
+    CloseHandle(f);
+
+    if (!data) {
+        CloseHandle(hmap);
+        return nullptr;
+    }
+
+    return new windows_file(hmap, size, data);
+}
+#else
+struct posix_file : public file {
+    using file::file;
+
+    virtual ~posix_file() {
+        munmap((void*)data, size);
     }
 };
 
@@ -109,8 +195,9 @@ file* open_file(const char * path) {
         return nullptr;
 
     // Construct a new file with the data
-    return new file(st.st_size, data);
+    return new posix_file(st.st_size, data);
 }
+#endif
 
 int main(int argc, char const *argv[]) {
     // Assume we're given 1 argument
