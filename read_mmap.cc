@@ -31,6 +31,40 @@ static void handle_sigbus(int c) {
     }
 }
 
+void install_signal_handlers() {
+    // Install signal handler for SIGBUS
+    struct sigaction act;
+    act.sa_handler = &handle_sigbus;
+
+    // SA_NODEFER is required due to siglongjmp
+    act.sa_flags = SA_NODEFER;
+    sigemptyset(&act.sa_mask); // Don't block any signals
+
+    // Connect the signal
+    sigaction(SIGBUS, &act, nullptr);
+}
+
+template<typename F>
+bool safe_mmap_try(F fn) {
+    // Make sure we don't call safe_mmap_try from fn
+    assert(!sigbus_jmp_set);
+
+    sigbus_jmp_set = true;
+
+    // sigsetjmp to handle SIGBUS. Do not save the signal mask
+    if (sigsetjmp(sigbus_jmp_buf, 0) == 0) {
+        // Call the lambda
+        fn();
+
+        // Notify that a jmp point has been set.
+        sigbus_jmp_set = false;
+        return true;
+    } else {
+        sigbus_jmp_set = false;
+        return false;
+    }
+}
+
 struct file {
     const size_t size;
     const void* data;
@@ -49,24 +83,9 @@ struct file {
         // Out of bounds check
         assert(offset <= size - sizeof(int64_t));
 
-        // Notify that a jmp point has been set.
-        sigbus_jmp_set = true;
-
-        // sigsetjmp to handle SIGBUS. Do not save the signal mask
-        if (sigsetjmp(sigbus_jmp_buf, 0) == 0) {
-            // This path will be run while no SIGBUS is encountered
+        return safe_mmap_try([&]() {
             *result = *(int64_t*)((int8_t*)data + offset);
-
-            // The jump point is no longer valid
-            sigbus_jmp_set = false;
-            return true;
-        } else {
-            // The jump point is no longer valid
-            sigbus_jmp_set = false;
-
-            // This path will be run when a SIGBUS is encountered
-            return false;
-        }
+        });
     }
 };
 
@@ -99,16 +118,7 @@ int main(int argc, char const *argv[]) {
         return 1;
     }
 
-    // Install signal handler for SIGBUS
-    struct sigaction act;
-    act.sa_handler = &handle_sigbus;
-
-    // SA_NODEFER is required due to siglongjmp
-    act.sa_flags = SA_NODEFER;
-    sigemptyset(&act.sa_mask); // Don't block any signals
-
-    // Connect the signal
-    sigaction(SIGBUS, &act, nullptr);
+    install_signal_handlers();
 
     // Open the requested file
     file* f = open_file(argv[1]);
