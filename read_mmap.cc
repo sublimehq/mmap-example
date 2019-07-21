@@ -1,7 +1,7 @@
 /**
  * We want to read arbitrary integers from a file. This is a very small example
  * of what handling a binary file in a long running process might look like,
- * meant to simulate what its like reading git object files in Sublime Merge.
+ * meant to simulate what it's like reading git object files in Sublime Merge.
  *
  * This is only tested for linux, however it may compile/run on mac/windows.
  */
@@ -25,12 +25,12 @@
 #if defined(_WIN32)
 void install_signal_handlers() {}
 #else
-// Keep track of this thread's jump point and whether its set
+// Keep track of this thread's jump point and whether it's set
 thread_local volatile bool sigbus_jmp_set;
 thread_local sigjmp_buf sigbus_jmp_buf;
 
 static void handle_sigbus(int c) {
-    // Onlt handle the signal if the jump point is set on this thread
+    // Only handle the signal if the jump point is set on this thread
     if (sigbus_jmp_set) {
         sigbus_jmp_set = false;
 
